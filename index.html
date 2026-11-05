@@ -528,10 +528,10 @@ const GEM_COLORS = [
 
 const FINISHES = [
   {key:'polish', name:'亮面', desc:'經過鏡面拋光處理、表面平滑光亮。'},
-  {key:'matte', name:'霧面', desc:'低調沉穩,內斂、貴而不顯的柔霧光。'},
+  {key:'matte', name:'柔光霧面', desc:'低調沉穩,內斂、貴而不顯的柔霧光。'},
   {key:'brushline', name:'極細閃拉絲', desc:'極為細緻且規律的直線紋理;透出細碎的閃爍光澤。'},
   {key:'brushcoarse', name:'橫向粗拉絲', desc:'橫向髮絲紋,展現出有層次的工藝細節,折射出如絲綢般的緞面霧光。'},
-  {key:'stars', name:'碎星', desc:'無數個極其細小的微型凹凸切面,如同繁星細碎光芒;有細微的砂礫顆粒觸感。'}
+  {key:'stars', name:'滿圈碎星', desc:'無數個極其細小的微型凹凸切面,如同繁星細碎光芒;有細微的砂礫顆粒觸感。'}
 ];
 
 /* 刻字字體選項;如需更換為指定字體,提供字型檔案或 Google Fonts 名稱即可置換 */
@@ -725,7 +725,7 @@ const OUTER_ENGRAVE_ALIGN = 'right';
 let state = {
   shape:'grain', previewShape:null, width:3,
   gemColor:'diamondwhite', gemPosition:'top', gemChosen:false, gemEmbed:false, /* 此款不鑲寶石 */
-  finish:'polish', /* 此款表面固定為樹紋,不提供表面工藝選擇 */
+  finish:'matte', /* 戒指工藝:霧面(預設)或碎星 */
   engraveInnerOn:false, engraveInnerText:'',
   engraveOuterOn:false, engraveOuterText:'',
   engraveOuter2On:false, engraveOuter2Text:'', engraveOuter2Color:'silver', engraveOuter2Font:'dancing',
@@ -1140,7 +1140,22 @@ function getGrainProfile(hw, ht){
   arc(-ht+rc, -yo, Math.PI, Math.PI*1.5, false);
   arc(xc-rc,  -yo, Math.PI*1.5, Math.PI*2, false);
   pts.pop(); /* 最後一點與起點重合 */
+  /* 側邊與內側也給連續的 v 座標(依剖面弧長 0→1),讓碎星貼圖能整圈灑滿 */
+  const rest = pts.filter(p=>!p.outer);
+  let acc = 0; const lens=[0];
+  for(let i=1;i<rest.length;i++){ acc += Math.hypot(rest[i].x-rest[i-1].x, rest[i].y-rest[i-1].y); lens.push(acc); }
+  rest.forEach((p,i)=>{ p.v = acc>0 ? lens[i]/acc : 0; });
   return pts;
+}
+function grainWScale(theta){ return 1 + 0.035*Math.sin(3*theta+0.7) + 0.02*Math.sin(11*theta+2.3) + 0.012*Math.sin(29*theta+1.1); }
+function grainTOff(theta){ return 0.025*Math.sin(5*theta+1.9) + 0.012*Math.sin(17*theta+0.4); }
+/* 碎星:內側與厚度側邊用的材質(平滑銀底 + 同一張碎星光點貼圖) */
+function grainRestStarsMaterial(){
+  const mat = new THREE.MeshStandardMaterial({color:0xd2d5d6, metalness:1.0, roughness:0.5, side:THREE.DoubleSide});
+  mat.emissive = new THREE.Color(0xffffff);
+  mat.emissiveMap = buildGrainSparkleMap();
+  mat.emissiveIntensity = 1.0;
+  return mat;
 }
 function buildGrainRingGeometry(halfWidth, halfThick, mainRadius){
   const raw = getGrainProfile(halfWidth, halfThick);
@@ -1154,8 +1169,8 @@ function buildGrainRingGeometry(halfWidth, halfThick, mainRadius){
     const theta = (ui/U)*Math.PI*2;
     const cx=Math.cos(theta), sy=Math.sin(theta);
     /* 手工刻劃的邊緣不會是完美直線:寬度與厚度沿圓周有些微不規則起伏 */
-    const wScale = 1 + 0.035*Math.sin(3*theta+0.7) + 0.02*Math.sin(11*theta+2.3) + 0.012*Math.sin(29*theta+1.1);
-    const tOff = 0.025*Math.sin(5*theta+1.9) + 0.012*Math.sin(17*theta+0.4);
+    const wScale = grainWScale(theta);
+    const tOff = grainTOff(theta);
     for(let pi=0; pi<Pn; pi++){
       const pr = profile[pi], pn = profN[pi];
       const radial = mainRadius + pr.x + (pr.x>0 ? tOff : 0);
@@ -1256,15 +1271,40 @@ function buildGrainTextures(){
   _grainTexCache = {normal:tex(cN), color:tex(cC), rough:tex(cR)};
   return _grainTexCache;
 }
+/* 樹紋款的戒指工藝:霧面 = 樹紋柔霧光澤;碎星 = 同樣的樹紋,再灑上細碎閃爍的星點 */
 function grainMaterialForFinish(type){
   const t = buildGrainTextures();
-  const matte = type==='matte';
+  const stars = type==='stars';
   const mat = new THREE.MeshStandardMaterial({
-    color: matte ? 0xc9cccc : 0xf2f3f4, metalness:1.0, roughness: matte ? 0.8 : 0.5,
+    color: stars ? 0xd2d5d6 : 0xf2f3f4, metalness:1.0, roughness: stars ? 0.62 : 0.5, /* 碎星底色略帶霧灰,星點才會跳出來 */
     map:t.color, normalMap:t.normal, roughnessMap:t.rough, side:THREE.DoubleSide
   });
   mat.normalScale = new THREE.Vector2(0.42, 0.42); /* 紋路深淺:數字愈小紋路愈淺 */
+  if(stars){
+    /* 碎星:在樹紋上灑滿細小的閃爍光點(自發光貼圖),再搭配立體反光小點(見 rebuildRing 內的 stars 區段) */
+    mat.emissive = new THREE.Color(0xffffff);
+    mat.emissiveMap = buildGrainSparkleMap();
+    mat.emissiveIntensity = 1.0;
+  }
   return mat;
+}
+let _grainSparkleCache = null;
+function buildGrainSparkleMap(){
+  if(_grainSparkleCache) return _grainSparkleCache;
+  const W=4096, H=512;
+  const c=document.createElement('canvas'); c.width=W; c.height=H;
+  const ctx=c.getContext('2d');
+  ctx.fillStyle='#000'; ctx.fillRect(0,0,W,H);
+  let seed = 7788;
+  const rnd = ()=>{ seed = (Math.imul(seed,1664525)+1013904223)>>>0; return seed/4294967296; };
+  /* 貼圖在圓周方向被拉長約 2.5 倍,光點畫成直向橢圓,貼到戒指上才會是圓點 */
+  for(let i=0;i<5200;i++){
+    const x=rnd()*W, y=H*0.08+rnd()*H*0.84, r=0.7+rnd()*1.5, a=0.45+rnd()*0.55;
+    ctx.fillStyle=`rgba(255,255,255,${a.toFixed(2)})`;
+    ctx.beginPath(); ctx.ellipse(x,y,r,r*2.5,0,0,Math.PI*2); ctx.fill();
+  }
+  const t=new THREE.CanvasTexture(c); t.wrapS=THREE.RepeatWrapping; t.wrapT=THREE.ClampToEdgeWrapping;
+  _grainSparkleCache = t; return t;
 }
 
 function starShapeGeometry(size){
@@ -1614,13 +1654,13 @@ function _rebuildRingNow(){
   /* 只有「呈現在畫面上的寬度」變細,厚度(halfThick)仍依照真實寬度計算,
      所以戒指截面依然維持原本的圓潤厚實感,只是整體看起來窄一些;
      圓背/平邊在較寬的寬度(如4mm)下先前顯得太寬,這裡用比素圈更小的縮放係數 */
-  const widthVisualScale = (viewShape==='plain') ? WIDTH_VISUAL_SCALE : (viewShape==='grain') ? (state.width<=3 ? 0.74 : 0.62) : (state.width<=3 ? 0.62 : 0.5); /* 樹紋款 3D 視覺寬度略加寬 */
+  const widthVisualScale = (viewShape==='plain') ? WIDTH_VISUAL_SCALE : (viewShape==='grain') ? (state.width<=3 ? 0.82 : 0.70) : (state.width<=3 ? 0.62 : 0.5); /* 樹紋款 3D 視覺寬度略加寬 */
   const visualHalfWidth = halfWidth * widthVisualScale;
 
   let geo, mat;
   if(viewShape==='grain'){
     geo = buildGrainRingGeometry(visualHalfWidth, halfThick, MAIN_RADIUS_MM);
-    mat = [grainMaterialForFinish('polish'), materialForFinish('polish')]; /* [外圈樹紋, 內圈與側邊平滑亮面] */
+    mat = [grainMaterialForFinish(state.finish), state.finish==='stars' ? grainRestStarsMaterial() : materialForFinish('polish')]; /* [外圈樹紋, 內圈與側邊:霧面為平滑亮面,碎星則整圈灑滿星點] */
   } else {
     geo = buildRingGeometry(viewShape, visualHalfWidth, halfThick, MAIN_RADIUS_MM);
     mat = materialForFinish(state.finish);
@@ -1683,10 +1723,10 @@ function _rebuildRingNow(){
   if(state.finish==='stars'){
     /* 真正的立體閃亮點,而非僅靠貼圖模擬:上百顆極小的高反光球體隨機灑滿戒圈外側表面,
        轉動時每顆的反光角度都不同,才會有「很多顆星星在戒指上閃閃發亮」的真實感 */
-    const n = 130;
+    const n = (viewShape==='grain') ? 280 : 130;
     const sparkGeo = new THREE.SphereGeometry(Math.max(0.045, visualHalfWidth*0.045), 6, 6);
     for(let i=0;i<n;i++){
-      const isGold = Math.random()<0.3;
+      const isGold = viewShape!=='grain' && Math.random()<0.3; /* 樹紋款的碎星為純銀白光點 */
       const sparkMat = new THREE.MeshStandardMaterial({
         color: isGold ? 0xf0cf8a : 0xffffff,
         metalness: 1, roughness: 0.05
@@ -1694,8 +1734,24 @@ function _rebuildRingNow(){
       const spark = new THREE.Mesh(sparkGeo, sparkMat);
       const theta = Math.random()*360;
       const widthOffset = (Math.random()-0.5)*visualHalfWidth*1.7;
-      spark.position.copy(bandPoint(theta, MAIN_RADIUS_MM, halfThick, 0.01, widthOffset));
+      spark.position.copy(bandPoint(theta, MAIN_RADIUS_MM, halfThick, viewShape==='grain' ? 0.05 : 0.01, widthOffset)); /* 樹紋表面微凸,星點稍微浮出才不會被埋住 */
       ringGroup.add(spark);
+    }
+    if(viewShape==='grain'){
+      /* 碎星整圈灑滿:內側與左右厚度側邊也放上立體反光小點 */
+      const sparkMatW = new THREE.MeshStandardMaterial({color:0xffffff, metalness:1, roughness:0.05});
+      const addSpark = (theta, radial, z)=>{ const m = new THREE.Mesh(sparkGeo, sparkMatW); m.position.set(radial*Math.cos(theta), radial*Math.sin(theta), z); ringGroup.add(m); };
+      const rc = Math.min(0.22, visualHalfWidth*0.25, halfThick*0.4);
+      for(let i=0;i<150;i++){ /* 內側 */
+        const th = Math.random()*Math.PI*2, ws = grainWScale(th);
+        addSpark(th, MAIN_RADIUS_MM - halfThick, (Math.random()-0.5)*2*(visualHalfWidth-rc)*ws);
+      }
+      for(let i=0;i<110;i++){ /* 左右厚度側邊 */
+        const th = Math.random()*Math.PI*2, ws = grainWScale(th), side = i%2 ? 1 : -1;
+        const top = halfThick + GRAIN_DOME_MM*(1-Math.pow((visualHalfWidth-rc)/visualHalfWidth,2)) + grainTOff(th) - rc;
+        const x = -halfThick + rc + Math.random()*(top - (-halfThick+rc));
+        addSpark(th, MAIN_RADIUS_MM + x, side*visualHalfWidth*ws);
+      }
     }
   }
 
@@ -1917,7 +1973,8 @@ function engravePreviewSVG(){
 /* ---------- Accordion 各段落內容 ---------- */
 const SECTIONS = [
   {id:'width', num:'01', title:'戒指寬度', summary:()=>state.width+'mm'},
-  {id:'engrave', num:'02', title:'刻字設計', summary:()=>{
+  {id:'finish', num:'02', title:'戒指工藝', summary:()=>FINISHES.find(f=>f.key===state.finish).name},
+  {id:'engrave', num:'03', title:'刻字設計', summary:()=>{
     const parts = [];
     if(state.engraveInnerOn) parts.push(`內「${state.engraveInnerText||'未填寫'}」`);
     if(state.engraveOuterOn) parts.push(`外「${state.engraveOuterText||'未填寫'}」`);
@@ -1925,8 +1982,8 @@ const SECTIONS = [
     if(state.engraveSideOn) parts.push(`厚度側邊「${state.engraveSideText||'未填寫'}」`);
     return parts.length ? parts.join('・') : '不刻字';
   }},
-  {id:'ringsize', num:'03', title:'戒指尺寸', summary:()=> state.ringSize ? `${state.ringSize} 號` : '尚未填寫'},
-  {id:'confirm', num:'04', title:'確認訂製資訊', summary:()=>'查看完整摘要'}
+  {id:'ringsize', num:'04', title:'戒指尺寸', summary:()=> state.ringSize ? `${state.ringSize} 號` : '尚未填寫'},
+  {id:'confirm', num:'05', title:'確認訂製資訊', summary:()=>'查看完整摘要'}
 ];
 
 function engraveSummaryText(){
@@ -2005,7 +2062,7 @@ function sectionBody(id){
   }
   if(id==='finish'){
     /* 「極細閃拉絲」僅平邊形狀可施作 */
-    const availableFinishes = FINISHES.filter(f=>f.key==='polish'||f.key==='matte'||(f.key==='brushline'&&state.shape==='flat'));
+    const availableFinishes = (state.shape==='grain') ? FINISHES.filter(f=>f.key==='matte'||f.key==='stars') : FINISHES.filter(f=>f.key==='polish'||f.key==='matte'||(f.key==='brushline'&&state.shape==='flat'));
     return `<div class="opt-grid">${availableFinishes.map(f=>`
       <div class="opt-card ${state.finish===f.key?'selected':''}" style="padding:10px 10px;min-height:104px;display:flex;flex-direction:column;justify-content:flex-start;" tabindex="0" role="button"
            onclick="setFinish('${f.key}')" onkeydown="if(event.key==='Enter'){setFinish('${f.key}')}">
@@ -2106,6 +2163,7 @@ function sectionBody(id){
       <div class="card">
         <h3>訂單資訊</h3>
         <div class="order-row"><span class="l">款式 / 寬度</span><span class="v">${shapeInfo.name}・${state.width}mm</span></div>
+        <div class="order-row"><span class="l">戒指工藝</span><span class="v">${finishInfo.name}</span></div>
         <div class="order-row"><span class="l">刻字</span><span class="v">${engraveSummaryText()}</span></div>
         <div class="order-row"><span class="l">戒指尺寸</span><span class="v">${state.ringSize ? state.ringSize+' 號' : '(尚未填寫)'}</span></div>
       </div>
@@ -2349,6 +2407,7 @@ function buildOrderText(){
     `【${BRAND_NAME} 訂購資訊】`,
     `戒指形狀:${shapeInfo.name}`,
     `戒指寬度:${state.width}mm`,
+    `戒指工藝:${finishInfo.name}`,
     `刻字內容:${engraveSummaryText()}`,
     `戒指尺寸:${state.ringSize ? state.ringSize+' 號' : '(尚未填寫)'}`,
     `以上是我設計的戒指內容,麻煩幫我報價,謝謝。`
@@ -2409,6 +2468,7 @@ function buildOrderCanvas(){
   const rows = [
     ['戒指形狀', shapeInfo.name],
     ['戒指寬度', state.width+'mm'],
+    ['戒指工藝', finishInfo.name],
     ['刻字內容', engraveSummaryText()],
     ['戒指尺寸', state.ringSize ? state.ringSize+' 號' : '(尚未填寫)'],
   ];
@@ -2510,6 +2570,7 @@ function buildDesignPhotoCanvas(){
   const orderRows = [
     ['戒指形狀', shapeInfo.name],
     ['戒指寬度', state.width+'mm'],
+    ['戒指工藝', finishInfo.name],
     ['戒指尺寸', state.ringSize ? state.ringSize+' 號' : '(尚未填寫)'],
   ];
   const rowH = 50;
@@ -2760,7 +2821,7 @@ const engFontName = k => (ENGRAVE_FONTS.find(f=>f.key===k)||{}).name || k;
       customer_phone: phone,
       shape_name: shapeInfo.name,
       width_mm: state.width + 'mm',
-      finish_name: '樹紋',
+      finish_name: finishInfo.name,
       gem_name: state.gemEmbed ? (gemInfo.name + '・' + gemPosInfo.name) : '不鑲嵌寶石',
       ring_size: state.ringSize ? (state.ringSize + ' 號') : '(尚未填寫)',
       engrave_inner: engraveInner,
@@ -2813,7 +2874,7 @@ function shareOrderToLine(){
 function restartAll(){
   state = {
     shape:'grain', previewShape:null, width:3, gemColor:'diamondwhite', gemPosition:'top', gemChosen:false, gemEmbed:false,
-    finish:'polish', engraveInnerOn:false, engraveInnerText:'', engraveOuterOn:false, engraveOuterText:'', engraveOuter2On:false, engraveOuter2Text:'', engraveOuter2Color:'silver', engraveOuter2Font:'dancing', engraveSideOn:false, engraveSideText:'',
+    finish:'matte', engraveInnerOn:false, engraveInnerText:'', engraveOuterOn:false, engraveOuterText:'', engraveOuter2On:false, engraveOuter2Text:'', engraveOuter2Color:'silver', engraveOuter2Font:'dancing', engraveSideOn:false, engraveSideText:'',
     engraveInnerColor:'silver', engraveOuterColor:'silver', engraveSideColor:'silver',
     engraveInnerFont:'specialelite', engraveOuterFont:'dancing', engraveSideFont:'notoserif',
     engraveInnerAngle:0, engraveOuterAngle:210, engraveSideAngle:102,
@@ -2833,7 +2894,7 @@ initThree();
   const backup = storeGet('teddreo_design_backup', LOGIN_BACKUP_MAX_MS);
   const shouldAutoSubmit = storeGet('teddreo_auto_submit_after_login', LOGIN_BACKUP_MAX_MS);
   if (backup) {
-    try{ Object.assign(state, JSON.parse(backup)); state.shape = 'grain'; state.previewShape = null; state.gemEmbed = false; state.gemChosen = false; state.finish = 'polish'; state.engraveOuter2On = false; state.engraveOuterOn = false; if(state.openSection==='gem'||state.openSection==='finish') state.openSection='engrave'; if(state.gemPosition==='side') state.gemPosition='top'; state.engraveSideOn=false; if(state.openSection==='shape') state.openSection='width'; enforceBrushlineEngraveColor(); state.engraveOuter2Color = state.engraveOuterColor; }catch(e){}
+    try{ Object.assign(state, JSON.parse(backup)); state.shape = 'grain'; state.previewShape = null; state.gemEmbed = false; state.gemChosen = false; if(state.finish!=='matte' && state.finish!=='stars') state.finish = 'matte'; state.engraveOuter2On = false; state.engraveOuterOn = false; if(state.openSection==='gem'||state.openSection==='finish') state.openSection='engrave'; if(state.gemPosition==='side') state.gemPosition='top'; state.engraveSideOn=false; if(state.openSection==='shape') state.openSection='width'; enforceBrushlineEngraveColor(); state.engraveOuter2Color = state.engraveOuterColor; }catch(e){}
     storeDel('teddreo_design_backup');
   }
   if (window.__lineJustLoggedIn && !backup) {
